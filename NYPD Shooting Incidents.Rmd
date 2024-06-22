@@ -1,0 +1,410 @@
+---
+title: "NYC's Bloody Summer: COVID-19 and Gun Violence"
+author: "Anonynmous (for peer review grading purposes)"
+date: "2024-06-19"
+output: pdf_document
+---
+
+New York City was enjoying a hard-won decline in gun violence and homicide, beginning with the start of Mayor Bill de Blasio's first year in 2014 [^1]. As evidenced by this analysis of NYPD Shooting Incident Data[^2], gun violence continued to decline in New York City over the following years. That is, until the COVID-19 pandemic, the bloodiest summer for gun violence in recent history in the city. This analysis explores the incidents of shootings in 2020, the first year of the COVID-19 pandemic, relative to other years in the dataset in search for factors that might explain the rise in gun violence that summer.
+
+[^1]: https://www.nytimes.com/2015/01/01/nyregion/new-york-city-murders-fall-but-the-police-arent-celebrating.html
+[^2]: City of New York. (2024). *NYPD Shooting Incident Data (Historic)* (Metadata Updated April 26, 2024). [Data set]. data.cityofnewyork.us. https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic.
+
+# Data
+NYPD Shooting Incident Data are publicly available data containing shooting incidents, key characteristics of the incident, and demographic data of the suspect and victim. Available data include the years from 2006 through 2023. Definitions of key variables, copied from the NYC Open Data Portal[^3], are as follows:
+
+* OCCUR_DATE: Exact date of the shooting incident
+* OCCUR_TIME: Exact time of the shooting incident
+* BORO: Borough where the shooting incident occurred
+* PERP_AGE_GROUP: Perpetrator's age within a category
+* PERP_SEX: Perpetrator's sex description
+* PERP_RACE: Perpetrator's race description
+* VIC_AGE_GROUP: Victim's age within a category
+* VIC_SEX: Victim's sex description
+* VIC_RACE: Victim's race description
+* Lon_Lat: Longitude and Latitude Coordinates for mapping
+
+[^3]: https://data.cityofnewyork.us/Public-Safety/NYPD-Shooting-Incident-Data-Historic-/833y-fsy8/about_data
+
+In the following code blocks the data are read in for analysis. Required libraries are also loaded.
+
+```{r libararies, message=FALSE}
+library(tidyverse)
+library(sf)
+library(lubridate)
+```
+
+```{r read_data, message=FALSE}
+# Read data
+data_url <- paste0("https://data.cityofnewyork.us/",
+                   "api/views/833y-fsy8/rows.csv",
+                   "?accessType=DOWNLOAD")
+df <- read_csv(data_url)
+
+# Convert dates
+df <- df %>%
+  mutate(
+    OCCUR_DATE = mdy(OCCUR_DATE),
+  )
+
+# Create spatial dataframe
+df_sf <- df %>% 
+  filter(!is.na(Lon_Lat)) %>% 
+  st_as_sf(wkt="Lon_Lat", crs=4326)
+```
+
+# Data Exploration
+Plotting the number of shooting incidents per month shows a marked decrease around the year 2014, followed by a slight decline until the year 2020. In 2020, the first year of the global COVID-19 pandemic, shooting incidents increase dramatically. New York City, a major metropolitan area with frequent global travelers, was hit especially early and especially hard by the pandemic. One might expect that under the travel restrictions, interactions between people and thus opportunities for gun violence might decrease. However, this was not the case.   
+
+
+```{r plot_incidents}
+# Calculate daily incidents
+df_daily <- df %>%
+  group_by(OCCUR_DATE) %>%
+  summarize(daily_count = n())
+
+# Calculate monthly incidents
+df_monthly <- df_daily %>%
+  mutate(month=floor_date(OCCUR_DATE, "month")) %>%
+  group_by(month) %>%
+  summarize(
+    monthly_count = sum(daily_count),
+    monthly_mean = mean(daily_count),
+    monthly_sd = sd(daily_count)
+)
+
+# Plot monthly incidents
+ggplot(df_monthly) +
+  aes(x = month, y = monthly_count, group=year(month)) +
+  geom_point(aes(color=factor(year(month)==2020))) +
+  geom_line(aes(color=factor(year(month)==2020))) +
+  scale_color_manual(values = c("black", "red"), labels = c("Other Years", "2020")) +
+  theme_minimal() +
+  labs(title = "Shooting incidents increased dramatically in 2020",
+    x = NULL,
+    y = "Number of Incidents", 
+    color="Year") + 
+  theme(legend.position = "bottom")
+```
+**Plot 1.** The number of shooting incidents increased dramatically in 2020 (highlighted red). 
+
+
+Evident from this plot is a seasonal nature of gun violence in New York City. The number of shooting incidents appears cyclical. Further analysis shows that the mean number of shooting incidents per day increases in the summer months. During the summer of 2020, this was more true than ever. Shooting incidents were as high as one standard deviation above the mean that summer.
+
+
+```{r seasonality}
+# Calculate seasonal incidents
+df_seasonal <- df_daily %>%
+  mutate(month=month(OCCUR_DATE), label=TRUE) %>%
+  group_by(month) %>%
+  summarize(
+    seasonal_count=n(),
+    seasonal_mean = mean(daily_count),
+    seasonal_sd = sd(daily_count)
+  )
+
+# Calculate seasonal incidents for 2020
+df_2020_seasonal <- df_daily %>%
+  filter(year(OCCUR_DATE) == 2020) %>%
+  mutate(month=month(OCCUR_DATE), label=TRUE) %>%
+  group_by(month) %>%
+  summarize(
+    seasonal_count=n(),
+    seasonal_mean = mean(daily_count),
+    seasonal_sd = sd(daily_count)
+  )
+
+# Plot seasonal incidents
+ggplot(df_seasonal) + 
+  aes(x = month, y = seasonal_mean) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(
+    ymin = seasonal_mean - seasonal_sd,
+    ymax = seasonal_mean + seasonal_sd),
+    width = 0.2) +
+  geom_point(data=df_2020_seasonal, aes(x=month, y=seasonal_mean), 
+             color="red", size=3) + 
+  scale_x_discrete(limits = as.character(1:12), labels = month.abb) +
+  theme_minimal() +
+  labs(title = "The summer of 2020 was an outlier for gun violence",
+    x = NULL,
+    y = "Incidents")
+```
+**Plot 2.** Monthly shooting incidents in the year 2020 (red dots) are shown against the average number of shooting incidents per month in New York City.
+
+
+I also assessed whether there might be meaningful differences between the time of day shooting incidents occurred or the location of shooting incidents in 2020 as compared to other years, but found no noticeable relationships. This is a cursory comparison of spatial distribution; additional analysis may detect patterns at smaller spatial scales. 
+
+
+```{r hourly, message=FALSE}
+# Calculate hourly incidents
+df_hourly <- df %>%
+  mutate(hour=hour(OCCUR_TIME)) %>%
+  group_by(OCCUR_DATE, hour) %>%
+  summarize(
+    count = n(),
+  ) %>%
+  group_by(hour) %>%
+  summarize(
+    hourly_count=sum(count),
+    hourly_mean=mean(count),
+    hourly_sd=sd(count)
+  )
+
+# Calculate hourly incidents for 2020
+df_2020_hourly <- df %>%
+  filter(year(OCCUR_DATE)==2020) %>%
+  mutate(hour=hour(OCCUR_TIME)) %>%
+  group_by(OCCUR_DATE, hour) %>%
+  summarize(
+    count = n(),
+  ) %>%
+  group_by(hour) %>%
+  summarize(
+    hourly_count=sum(count),
+    hourly_mean=mean(count),
+    hourly_sd=sd(count)
+  )
+
+# Plot hourly incidents
+ggplot() + 
+  geom_col(data=df_hourly, aes(x = factor(hour), y = hourly_mean)) +
+  geom_point(data=df_2020_hourly, aes(x=factor(hour), y=hourly_mean), color="red") +
+  geom_errorbar(data=df_hourly, aes(
+    x=factor(hour),
+    ymin = hourly_mean - hourly_sd,
+    ymax = hourly_mean + hourly_sd),
+    width = 0.2) +
+  coord_polar(start = 0) +
+  scale_x_discrete(limits = factor(0:23)) +
+  theme_minimal() +
+  theme(
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  ) +
+  labs(title = "Distribution of Events by Hour of the Day")
+```
+**Plot 3.** Shooting incidents occur most frequently in the evening, night and early morning hours. There was no noticeable difference between the time of occurrence of shooting incidents in 2020 (red dots) as compared to other years. 
+
+
+```{r map_incidents, message=FALSE}
+# Convert dataframe to spatial dataframe
+df_sf_is2020 <- df_sf %>%
+  mutate(is_2020 = ifelse(year(OCCUR_DATE) == 2020, "2020", "Other Years"))
+
+# Filter for 2020
+df_sf_2020 <- df_sf_is2020 %>% filter(is_2020=="2020")
+
+# Map incidents
+ggplot() +
+  geom_sf(data = df_sf, aes(color=BORO)) +
+  geom_sf(data = df_sf_2020, aes(shape = "2020"), color = "black", size = 2, show.legend = FALSE) +
+  scale_shape_manual(values = 20, labels = "2020") + 
+  theme_minimal() +
+  labs(
+    title = "Shooting Incidents by Borough",
+    x = NULL,
+    y = NULL
+  )
+```
+**Plot 4.** The spatial distribution of shooting incidents does not change significantly in 2020 (black points) relative to other years.
+
+
+# Analysis
+To understand what might have contributed to the dramatic increase in gun violence seen in 2020, I fit a logistic regression model using an indicator variable for whether the incident occurred in 2020 on predictors for the age (in groups), sex and race of the perpetrator. 
+
+First, I clean the data by removing invalid or incomplete records. Because the perpetrator in many shooting incidents is not known, 14,487 records are removed (approximately 49% of the dataset) in this step. Next, I filter the data to the years 2018, 2019 and 2020 and the summer months of June, July and August. Focusing on these months may help elucidate what may have changed in the summer of 2020 relative to previous summers and also serves to balance the dataset (329 incidents in 2020 and 336 in other years).
+
+
+
+```{r clean_data, message=FALSE}
+# Drop incomplete or non-standard entries
+valid_age_groups <- c("<18", "18-24", "25-44", "45-64", "65+")
+valid_races <- c("BLACK", "WHITE HISPANIC", 
+                 "BLACK HISPANIC", "ASIAN / PACIFIC ISLANDER")
+valid_sexes <- c("M", "F")
+
+df_model <- df %>%
+  filter(PERP_AGE_GROUP %in% valid_age_groups) %>%
+  filter(VIC_AGE_GROUP %in% valid_age_groups) %>%
+  filter(PERP_RACE %in% valid_races) %>%
+  filter(VIC_RACE %in% valid_races) %>%
+  filter(PERP_SEX %in% valid_sexes) %>%
+  filter(VIC_SEX %in% valid_sexes) %>%
+  mutate(
+    PERP_AGE_GROUP = factor(PERP_AGE_GROUP),
+    PERP_RACE = factor(PERP_RACE),
+    PERP_SEX = factor(PERP_SEX),
+    VIC_AGE_GROUP = factor(VIC_AGE_GROUP),
+    VIC_RACE = factor(VIC_RACE),
+    VIC_SEX = factor(VIC_SEX),
+    STATISTICAL_MURDER_FLAG = as.factor(STATISTICAL_MURDER_FLAG),
+    BORO = factor(BORO)
+  )
+
+# Add indicator variable for year 2020
+df_model <- df_model %>% 
+  mutate(is_2020 = ifelse(year(OCCUR_DATE) == 2020, 1, 0)) %>%
+  select(c(OCCUR_DATE, PERP_AGE_GROUP, PERP_RACE, PERP_SEX, 
+                                  VIC_AGE_GROUP, VIC_RACE, VIC_SEX, is_2020))
+
+# Filter to summer months of 2018 - 2020
+df_model_2020 <- df_model %>% 
+  filter(year(OCCUR_DATE) >= 2018 & year(OCCUR_DATE) <= 2020 & 
+           (month(OCCUR_DATE) >= 6 & month(OCCUR_DATE) <= 8))
+```
+
+
+I suspected that the sex, race and age group of the perpetrator might be highly correlated to the sex, race and age group of the victim. To avoid multicollinearity in the model, first I examine the correlation for these factors between perpetrator and victim. 
+
+
+```{r colinearity, message=FALSE}
+# Function to plot heatmap correlations
+plot_corr <- function(counts, factor){
+  factor_lower <- tolower(factor)
+  plot <- ggplot(counts, aes_string(x = paste0("PERP_",factor), 
+                             y = paste0("VIC_",factor), 
+                             fill = "count")) +
+    geom_tile() +
+    scale_fill_gradient(low = "white", high = "black") +
+    theme_minimal() +
+    labs(title = paste("Correlation of", factor_lower, "between perpetrator and victim"),
+    x = paste("Perpetrator", factor_lower),
+    y = paste("Victim", factor_lower),
+    fill = "Count") + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none")
+  return (plot)
+}
+
+# Count overlaps in race
+race_counts <- df_model %>%
+  group_by(PERP_RACE, VIC_RACE) %>%
+  summarize(count = n()) %>%
+  ungroup()
+
+# Count overlaps in age group
+age_counts <- df_model %>%
+  group_by(PERP_AGE_GROUP, VIC_AGE_GROUP) %>%
+  summarize(count = n()) %>%
+  ungroup()
+
+# Count overlaps in sex
+sex_counts <- df_model %>%
+  group_by(PERP_SEX, VIC_SEX) %>%
+  summarize(count = n()) %>%
+  ungroup()
+```
+```{r plot_race, message=FALSE, warning=FALSE}
+# Plot race correlation
+plot_corr(race_counts, "RACE")
+```
+**Plot 5.** The correlation between the race of the perpetrator and the victim is high.
+
+
+
+```{r plot_age, message=FALSE, warning=FALSE}
+# Plot age correlation
+plot_corr(age_counts, "AGE_GROUP")
+```
+**Plot 6.** The correlation between the age group of the perpetrator and the victim is high.
+
+
+
+```{r plot_sex, message=FALSE, warning=FALSE}
+# Plot sex correlation
+plot_corr(sex_counts, "SEX")
+```
+**Plot 7.** The correlation between the sex of the perpetrator and the victim is high.
+
+Given the high correlations between perpetrator and victim race, sex and age group, I fit the logistic regression model on only the race, sex and age group of the perpetrator. I chose the perpetrator, rather than victim, in hopes to understand which of these factors, if any, might be correlated with perpetrators of the gun violence which I believe will be more explanatory of the rise in shooting incidents as opposed to victim characteristics.
+
+
+
+```{r model}
+# Model logistic relationship
+model_logistic <- glm(is_2020 ~ PERP_AGE_GROUP + PERP_RACE + PERP_SEX, 
+                      data = df_model_2020, family = binomial())
+
+# Print summary
+print(summary(model_logistic))
+```
+**Table 1.** Summary statistics of the logistic regression model of perpetrator age, race and sex on the indicator response variable where $1$ indicates the year is 2020.
+
+The model reveals no statistically significant predictors of the increase in shooting incidents in the summer of 2020 relative to the summers of 2018 and 2019, suggesting that age, race, and sex are not meaningful in explaining why the summer of 2020 saw so much gun violence. In other words, while gun violence increased, it increased proportionally across all groups in terms of race, age and sex.
+
+# Discussion
+While this negative result may at first appear uninteresting, I believe it is important to share negative results such as these that might contradict expectations. I expected that the incidents of gun violence might increase among the age group 18-24 during the summer of 2020 relative to previous years due to the depressed economy of that year. The lockdowns disproportionately affected younger people who are earlier in their careers and more likely to work in industries impacted by COVID-19 restrictions such as the service industry. In fact, we see the opposite affect for the years evaluated. The proportion of gun violence attributed to perpetrators in the age group 18-24 slightly decreased, while the proportion in age groups less than 18 and 25-44 slightly increased.
+
+
+```{r plot_age_bar}
+# Calculate proportion by age group 
+age_proportions <- df_model_2020 %>%
+  group_by(is_2020, PERP_AGE_GROUP) %>%
+  summarize(count = n(), .groups = 'drop') %>%
+  group_by(is_2020) %>%
+  mutate(proportion = count / sum(count))
+
+# Plot proportion by age group
+ggplot(age_proportions) + 
+  aes(x = PERP_AGE_GROUP, y = proportion, fill = factor(is_2020)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  scale_fill_manual(values = c("0" = "darkgrey", "1" = "red"), 
+                    labels = c("2018, 2019", "2020")) +
+  labs(title = "Proportion of Gun Violence by Perpetrator Age Group",
+    x = "Perpetrator Age Group",
+    y = "Proportion of Incidents",
+    fill = "Year") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+**Plot 8.** The proportion of gun violence perpetrated by those in the age group 18-24 slightly decreased, whereas the proportion perpetrated by those in the age groups <18 and 25-44 slightly increased.
+
+
+My first attempt at modeling this relationship compared all years to 2020 and did in fact find that age group was a statistically significant predictor of whether the incident took place in 2020. Surprisingly, in this model, it was the age groups 25-44 and 45-65 that were associated with a statistically significant increase in gun violence. However, the effect disappeared with further refinement of the model to more specifically focus on the effects of the pandemic by comparing only the pre-COVID years and the year 2020.  
+
+This indicates to me that there may be something interesting happening in the 18-24 year old age group that might explain the general trend towards a decrease in gun violence in New York City. Gun violence in this age group appears to be decreasing disproportionately with respect to other age groups. This trend was interrupted, only mildly and briefly, beginning in 2020. 
+
+
+```{r age_props, message=FALSE, warning=FALSE}
+# Calculate count and proportion by age group, all time
+age_props_all_time <- df_model %>%
+  group_by(year=year(OCCUR_DATE), PERP_AGE_GROUP) %>%
+  summarize(count = n(), .groups = 'drop') %>%
+  group_by(year) %>%
+  mutate(proportion = count / sum(count),
+         highlight = ifelse(PERP_AGE_GROUP=="18-24", "highlight", "other"))
+
+labels <- age_props_all_time %>%
+  group_by(PERP_AGE_GROUP) %>%
+  filter(year == max(year)) %>%
+  ungroup()
+
+# Plot count by age group
+ggplot(age_props_all_time) + 
+  aes(x = year, y = proportion, group = PERP_AGE_GROUP) +
+  geom_line(aes(color = highlight, size = highlight)) +
+  geom_point(aes(color = highlight), size = 2) +
+  geom_text(data = labels, aes(label = PERP_AGE_GROUP, color = highlight),
+            hjust = -0.2, vjust = 0.5) +
+  scale_color_manual(values = c("highlight" = "red", "other" = "darkgrey")) +
+  scale_size_manual(values = c("highlight" = 1.2, "other" = 0.5)) +
+  theme_minimal() +
+  labs(title = "Proportion of gun violence by 18-24 year olds is decreasing",
+       x = "Year",
+       y = "Proportion",
+       color = "Group") +
+  theme(legend.position = "none") + 
+  expand_limits(x = 2024)
+```
+**Plot 9.** The proportion of gun violence perpetrated by those aged 18-24 has declined steadily since 2014, with the exception of the years affected by the pandemic (2020, 2021, and 2022).
+
+
+On the whole, it is possible that 18-24 year olds were disproportionately affected by the conditions of the pandemic relative to other age groups, however the effect of the pandemic was overcome by a broader overall trend towards a decrease in the prevalence of gun violence in this group. 
+
+# Bias
+In 2020 I was early in my career but luckily had a job that allowed me to work remotely. However, I witnessed many of my friends struggling under economic strain and unemployment. Those still in school were impacted by school closures. I was affected by the stress and uncertainty surrounding that time along with my peers. For these reasons, I was interested in the spike in gun violence around the pandemic and was susceptible to my initial, spurious finding that age was a potential contributing factor.  I may have been biased towards that variable as a predictor, and my bias may have incentivized me to slice the data in multiple ways to find a statistically significant relationship (known as "p-hacking"). I mitigated this bias by presenting my results even after disappointedly finding out that the relationship did not hold up.
+
+The dataset itself is likely subject to many sources of bias. For example, the probability that a shooting incident is reported and the probability that a perpetrator is found may be correlated with demographic characteristics of the dataset such as age and race. It is important to recognize that these biases cannot be detected from the dataset itself, and the bias may impact any conclusions drawn from the data. 
